@@ -35,4 +35,14 @@ def main():
         time.sleep(30)  # 30초마다 체크
 
 if __name__ == "__main__":
-    main()
+    from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "코인 경고 봇 작동 중!"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
+
