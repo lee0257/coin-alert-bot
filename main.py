@@ -1,5 +1,100 @@
 import time
 import requests
+import threading
+from flask import Flask
+
+# 텔레그램 설정
+TELEGRAM_TOKEN = "7287889681:AAEuSd9XLyQGnXwDK8fkI40Ut-_COR7xIrY"
+CHAT_ID = "1901931119"
+
+# 업비트 전체 KRW 마켓 가져오기
+def get_all_krw_tickers():
+    url = "https://api.upbit.com/v1/market/all"
+    headers = {"Accept": "application/json"}
+    response = requests.get(url, headers=headers)
+    markets = response.json()
+    krw_tickers = []
+    for market in markets:
+        if market['market'].startswith('KRW-'):
+            krw_tickers.append({
+                "market": market['market'],
+                "korean_name": market['korean_name']
+            })
+    return krw_tickers
+
+# 특정 코인 1분봉 5개 가져오기
+def get_candle_data(market):
+    url = f"https://api.upbit.com/v1/candles/minutes/1?market={market}&count=5"
+    headers = {"Accept": "application/json"}
+    response = requests.get(url, headers=headers)
+    return response.json()
+
+# 텔레그램 메시지 보내기
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"❗ 텔레그램 전송 실패: {e}")
+
+# 급등 조짐 감지
+def detect_spike(ticker_info):
+    market = ticker_info['market']
+    korean_name = ticker_info['korean_name']
+
+    try:
+        candles = get_candle_data(market)
+        if len(candles) < 5:
+            return
+
+        # 5분 평균 계산
+        avg_volume = sum(candle['candle_acc_trade_volume'] for candle in candles[1:]) / 4
+        avg_price = sum(candle['trade_price'] for candle in candles[1:]) / 4
+
+        # 최근 1분 데이터
+        current = candles[0]
+        current_volume = current['candle_acc_trade_volume']
+        current_price = current['trade_price']
+
+        # 변화율 계산
+        volume_change = ((current_volume - avg_volume) / avg_volume) * 100
+        price_change = ((current_price - avg_price) / avg_price) * 100
+
+        # 급등 조짐 판단 (거래량 +30% 이상 또는 가격 +2% 이상)
+        if volume_change >= 30 or price_change >= 2:
+            message = (f"🚀 급등 조짐 포착!\n"
+                       f"{korean_name} ({market})\n"
+                       f"현재가: {current_price:,.0f} KRW\n"
+                       f"거래량 변화: {volume_change:.2f}%\n"
+                       f"가격 변화: {price_change:.2f}%")
+            print(message)
+            send_telegram_message(message)
+
+    except Exception as e:
+        print(f"에러 발생({market}): {e}")
+
+# 전체 모니터링
+def monitor_market():
+    while True:
+        tickers = get_all_krw_tickers()
+        for ticker_info in tickers:
+            detect_spike(ticker_info)
+            time.sleep(0.2)  # API 호출 부하 방지용 (0.2초 대기)
+        time.sleep(30)  # 전체 순회 후 30초 대기
+
+# Flask 웹서버 (Koyeb용)
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "코인 경고 봇 작동 중!"
+
+if __name__ == "__main__":
+    threading.Thread(target=monitor_market).start()
+    app.run(host="0.0.0.0", port=8000)
+import time
+import requests
 from flask import Flask
 
 # 업비트에서 비트코인 가격 조회
