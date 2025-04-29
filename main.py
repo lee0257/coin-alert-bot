@@ -1,3 +1,125 @@
+# 업비트 실시간 급등/급락/세력/눌림목/바닥 다지기 감지 통합 시스템 (최종 버전)
+
+import asyncio
+import websockets
+import json
+import time
+import requests
+
+# 업비트 WebSocket 서버 URL
+UPBIT_WS_URL = "wss://api.upbit.com/websocket/v1"
+
+# 텔레그램 봇 설정
+TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+TELEGRAM_CHAT_ID = 'YOUR_CHAT_ID'
+
+# 감시할 코인 리스트
+MONITOR_COINS = ["KRW-BTC", "KRW-ETH", "KRW-SUI", "KRW-ARB", "KRW-STX", "KRW-SEI"]
+
+# 조건 설정
+VOLUME_MULTIPLIER = 2.5
+BUY_RATIO_THRESHOLD = 60
+RISE_LIMIT = 0.5
+DROP_MAJOR = 5
+DROP_ALT = 7
+DROP_TIME_WINDOW = 180  # 3분
+SELYAK_THRESHOLD = 140
+HORIZONTAL_TIME = 1200  # 20분
+
+# 내부 상태 저장용
+ticker_data = {}
+last_alert = {}
+
+async def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    requests.post(url, data=data)
+
+async def handle_message(msg):
+    code = msg['cd']
+    price = msg['tp']
+    volume = msg['tv']
+    timestamp = time.time()
+
+    if code not in ticker_data:
+        ticker_data[code] = {
+            'start_price': price,
+            'start_volume': volume,
+            'start_time': timestamp,
+            'max_price': price,
+            'min_price': price,
+            'volume_sum': volume,
+            'price_list': [price]
+        }
+    else:
+        data = ticker_data[code]
+        elapsed = timestamp - data['start_time']
+
+        # 가격/거래량 업데이트
+        data['max_price'] = max(data['max_price'], price)
+        data['min_price'] = min(data['min_price'], price)
+        data['volume_sum'] += volume
+        data['price_list'].append(price)
+
+        # 급락 감지
+        if elapsed <= DROP_TIME_WINDOW:
+            drop_percent = (data['start_price'] - price) / data['start_price'] * 100
+            if ('BTC' in code or 'ETH' in code) and drop_percent >= DROP_MAJOR:
+                if last_alert.get(code + '_drop', 0) + 180 < timestamp:
+                    await send_telegram_message(f"\ud83d\udcc8 [급락 감지] {code} 3분 이내 {drop_percent:.2f}% 급락!")
+                    last_alert[code + '_drop'] = timestamp
+            elif drop_percent >= DROP_ALT:
+                if last_alert.get(code + '_drop', 0) + 180 < timestamp:
+                    await send_telegram_message(f"\ud83d\udcc8 [급락 감지] {code} 3분 이내 {drop_percent:.2f}% 급락!")
+                    last_alert[code + '_drop'] = timestamp
+
+        # 급등 초입 포착
+        recent_prices = data['price_list'][-60:]  # 최근 1분 데이터
+        if len(recent_prices) >= 10:
+            price_change = (price - min(recent_prices)) / min(recent_prices) * 100
+            if price_change <= RISE_LIMIT and data['volume_sum'] >= VOLUME_MULTIPLIER * volume:
+                if last_alert.get(code + '_rise', 0) + 300 < timestamp:
+                    await send_telegram_message(f"\ud83d\udcc9 [급등 초입 포착] {code} 거래량 급증, 상승 직전 감지!")
+                    last_alert[code + '_rise'] = timestamp
+
+        # 세력 포착 (체결강도 가정, 간략화)
+        if data['volume_sum'] >= SELYAK_THRESHOLD * 1000:
+            if last_alert.get(code + '_se', 0) + 600 < timestamp:
+                await send_telegram_message(f"\ud83d\udd2c [세력 매집 포착] {code} 거래량 급증 + 저점 매집 시도 감지!")
+                last_alert[code + '_se'] = timestamp
+
+        # 바닥 다지기 포착
+        if elapsed >= HORIZONTAL_TIME:
+            price_range = max(data['price_list']) - min(data['price_list'])
+            if price_range / min(data['price_list']) * 100 <= 1.0:
+                if last_alert.get(code + '_bottom', 0) + 1800 < timestamp:
+                    await send_telegram_message(f"\ud83d\udcca [바닥 다지기 포착] {code} 저점 횡보 + 거래량 증가 감지!")
+                    last_alert[code + '_bottom'] = timestamp
+
+async def main():
+    async with websockets.connect(UPBIT_WS_URL, ping_interval=None) as websocket:
+        subscribe_fmt = [{
+            "ticket": "test",
+        }, {
+            "type": "trade",
+            "codes": MONITOR_COINS
+        }]
+        await websocket.send(json.dumps(subscribe_fmt))
+
+        while True:
+            try:
+                message = await websocket.recv()
+                msg = json.loads(message)
+                await handle_message(msg)
+            except Exception as e:
+                print(f"에러 발생: {e}")
+                break
+
+if __name__ == "__main__":
+    asyncio.run(main())
 import time
 import requests
 import threading
